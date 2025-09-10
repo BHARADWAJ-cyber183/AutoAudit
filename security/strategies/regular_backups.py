@@ -1,35 +1,36 @@
 # strategies/regular_backups.py
 from __future__ import annotations
-import re
 from typing import List, Dict
 from .overview import Strategy
 
 
 class RegularBackups(Strategy):
     """
-    Essential Eight – Regular Backups (ML1 focus, evidence-driven).
-    Consumes OCR/text from:
-      - Backup product logs and job reports (Veeam, M365, Acronis, Windows Backup, etc.)
-      - Windows Task Scheduler exports (.xml/.txt), wbadmin outputs, PowerShell transcripts
-      - Screenshots of backup consoles / settings
-      - Policy docs or config dumps showing retention/encryption/offsite
-
-    Rules (examples):
-      RB-01  scheduled backups configured (frequency)
-      RB-02  backups stored offline/offsite/immutable
-      RB-03  backup data encryption enabled
-      RB-04  recent successful backup completed
-      RB-05  restore/recovery tested (evidence of test restore)
-      RB-06  retention policy defined (e.g., days/weeks/months or #copies)
-      RB-07  access control for backups (MFA/admin separation/role-based)
+    Essential Eight – Regular Backups
+    Detects whether backups are configured, working, and tested.
+    Checks evidence such as backup logs, configuration exports,
+    restore test results, and related screenshots/text.
     """
 
-    id = "REGBAK"
+    id = "RB01"
     name = "Regular Backups"
 
-    # ---------- helpers ----------
+    def description(self) -> str:
+        return (
+            "Checks backup schedule, offsite/immutable copies, encryption, "
+            "recent backup success, restore test results, retention, and access controls."
+        )
+
     @staticmethod
-    def _row(tid: str, sub: str, pf: str, prio: str, rec: str, ev: str, lvl: str = "ML1") -> Dict:
+    def _row(
+        tid: str,
+        sub: str,
+        lvl: str,
+        pf: str,
+        prio: str,
+        rec: str,
+        ev: List[str]
+    ) -> Dict:
         return {
             "test_id": tid,
             "sub_strategy": sub,
@@ -37,156 +38,75 @@ class RegularBackups(Strategy):
             "pass_fail": pf,
             "priority": prio,
             "recommendation": rec,
-            "evidence": [ev] if ev else [],
+            "evidence": ev,
         }
 
-    @staticmethod
-    def _has(text: str, *phrases: str) -> bool:
-        t = text.lower()
-        return any(p.lower() in t for p in phrases)
-
-    @staticmethod
-    def _re(text: str, pattern: str) -> bool:
-        return re.search(pattern, text, flags=re.I | re.S) is not None
-
-    @staticmethod
-    def _clip(text: str, n: int = 200) -> str:
-        t = " ".join(text.split())
-        return (t[:n] + "…") if len(t) > n else t
-
-    # ---------- main rule emitter ----------
     def emit_hits(self, text: str, source_file: str = "") -> List[Dict]:
         rows: List[Dict] = []
-        t = text or ""
-        ev = self._clip(t)
+        t = (text or "").lower()
 
-        # RB-01: Scheduled backups configured (frequency present)
-        # Look for common scheduler/backup job indicators
-        freq_hit = (
-            self._has(t, "daily backup", "weekly backup", "schedule enabled", "trigger: daily", "trigger: weekly")
-            or self._re(t, r"\b(every\s+\d+\s+(hours?|days?|weeks?))\b")
-            or self._re(t, r"\bwbadmin\s+start\s+backup\b")
-            or self._re(t, r"\btask\s+scheduler\b|\bTaskName:\s+\\.*backup")
-            or self._re(t, r"\bjob\s+schedule(d)?\b")
-        )
-        if freq_hit:
+        # === ML1-RB-01: Backups configured & recent ===
+        if "backup completed successfully" in t or "last backup" in t:
             rows.append(self._row(
-                "ML1-RB-01",
-                "Backups are scheduled",
-                "PASS",
-                "High",
-                "Maintain automated backup schedules (daily for critical data).",
-                ev
+                "ML1-RB-01", "Backups are configured and recent", "ML1", "PASS", "High",
+                "Ensure backups continue to run successfully on schedule.",
+                [source_file]
+            ))
+        elif "backup failed" in t or "no recent backup" in t:
+            rows.append(self._row(
+                "ML1-RB-01", "Backups are configured and recent", "ML1", "FAIL", "High",
+                "Fix failed backups and verify backup scheduling.",
+                [source_file]
             ))
 
-        # RB-02: Offsite/offline/immutable copies
-        offsite_hit = (
-            self._has(t, "offsite", "off-site", "off line", "offline copy", "air-gapped", "immutable")
-            or self._has(t, "object lock", "worm", "s3 bucket with retention", "immutability")
-            or self._re(t, r"copy\s+to\s+(tape|external drive|cloud|azure|aws|s3|glacier|dr site)")
-        )
-        if offsite_hit:
+        # === ML1-RB-02: Offsite or immutable ===
+        if "offsite" in t or "cloud backup" in t or "immutable" in t:
             rows.append(self._row(
-                "ML1-RB-02",
-                "Backups stored offline/offsite/immutable",
-                "PASS",
-                "High",
-                "Keep at least one offline/offsite/immutable copy (3-2-1 strategy).",
-                ev
+                "ML1-RB-02", "Backups stored offsite/immutable", "ML1", "PASS", "Medium",
+                "Maintain offsite/immutable copies to prevent ransomware impact.",
+                [source_file]
             ))
 
-        # RB-03: Encryption enabled
-        enc_hit = (
-            self._has(t, "encryption enabled", "encrypted backups", "encrypt data at rest", "protected with aes")
-            or self._re(t, r"\baes-(128|192|256)\b")
-            or self._has(t, "bitlocker", "server-side encryption", "sse-s3", "kms key")
-        )
-        if enc_hit:
+        # === ML1-RB-03: Restore tested ===
+        if "restore test successful" in t or "backup restored" in t:
             rows.append(self._row(
-                "ML1-RB-03",
-                "Backup data encryption",
-                "PASS",
-                "Medium",
-                "Ensure backups are encrypted in transit and at rest; protect keys separately.",
-                ev
+                "ML1-RB-03", "Restore process tested", "ML1", "PASS", "Medium",
+                "Regularly test restoring backups to validate integrity.",
+                [source_file]
+            ))
+        elif "restore failed" in t:
+            rows.append(self._row(
+                "ML1-RB-03", "Restore process tested", "ML1", "FAIL", "High",
+                "Investigate and fix restore test issues immediately.",
+                [source_file]
             ))
 
-        # RB-04: Recent successful backup (success keywords + recent date pattern)
-        # (We don’t evaluate the actual date window here; we just detect success signals.)
-        success_hit = (
-            self._has(t, "backup completed successfully", "result: success", "status: success", "return code 0x0")
-            or self._re(t, r"\bsuccess(?:ful|fully)\b.*\bbackup\b")
-            or self._re(t, r"\bjob\s+result:\s*success\b")
-        )
-        if success_hit:
+        # === ML1-RB-04: Retention policy ===
+        if "retention policy" in t or "kept for" in t:
             rows.append(self._row(
-                "ML1-RB-04",
-                "Recent successful backups",
-                "PASS",
-                "High",
-                "Monitor daily and investigate failures immediately; alerting should be enabled.",
-                ev
+                "ML1-RB-04", "Retention policy in place", "ML1", "PASS", "Low",
+                "Ensure backups are retained per compliance requirements.",
+                [source_file]
             ))
 
-        # RB-05: Restore test executed / verified
-        restore_hit = (
-            self._has(t, "test restore", "verified restore", "restore tested", "recovery test", "bare-metal restore")
-            or self._re(t, r"\brestore\s+(completed|successful)\b")
-        )
-        if restore_hit:
+        # === ML1-RB-05: Encrypted backups ===
+        if "encrypted backup" in t or "aes" in t or "rsa" in t:
             rows.append(self._row(
-                "ML1-RB-05",
-                "Periodic restore testing",
-                "PASS",
-                "High",
-                "Perform and document regular restore tests from backup media.",
-                ev
+                "ML1-RB-05", "Backups encrypted", "ML1", "PASS", "High",
+                "Use strong encryption to protect backup data.",
+                [source_file]
             ))
 
-        # RB-06: Retention policy defined
-        retention_hit = (
-            self._has(t, "retention", "keep for", "days to keep", "weeks to keep", "months to keep")
-            or self._re(t, r"\b(retention|keep)\s+(for\s+)?\d+\s+(days?|weeks?|months?)\b")
-            or self._re(t, r"\b(?:gfs|grandfather-father-son)\b")
-        )
-        if retention_hit:
+        # === ML1-RB-06: Access controlled ===
+        if "restricted access" in t or "admin only" in t:
             rows.append(self._row(
-                "ML1-RB-06",
-                "Retention policy defined",
-                "PASS",
-                "Medium",
-                "Define and enforce retention (e.g., 30–90 days, plus monthly/annual where needed).",
-                ev
-            ))
-
-        # RB-07: Access control on backup platform (MFA / separate admin)
-        access_hit = (
-            self._has(t, "mfa enabled", "multi-factor", "two-factor", "role-based access", "rbac")
-            or self._has(t, "separate admin account", "break-glass account", "least privilege")
-        )
-        if access_hit:
-            rows.append(self._row(
-                "ML1-RB-07",
-                "Backup console access control",
-                "PASS",
-                "Medium",
-                "Enforce MFA and least-privilege on backup administration.",
-                ev
-            ))
-
-        # If nothing matched, emit a single FAIL row so the file still appears in reports
-        if not rows:
-            rows.append(self._row(
-                "ML1-RB-00",
-                "No backup controls detected in evidence",
-                "FAIL",
-                "High",
-                "Provide logs/screenshots showing schedule, success, retention, encryption, and restore tests.",
-                self._clip(f"{source_file}: {t}")
+                "ML1-RB-06", "Backups access controlled", "ML1", "PASS", "Medium",
+                "Restrict access to backups only to authorized personnel.",
+                [source_file]
             ))
 
         return rows
 
 
-def get_strategy() -> Strategy:
+def get_strategy():
     return RegularBackups()
